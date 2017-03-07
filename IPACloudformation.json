@@ -1,0 +1,171 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+
+  "Description": "Creates an EC2 instance, EBS volume, sets up Route53 and LDAP with accounts.",
+
+  "Parameters": {
+
+    "KeyName" : {
+      "Description" : "Name of existing EC2 KeyPair to allow SSH.",
+      "Type" : "String",
+      "Default" : "Your-Key-Name"
+    },
+
+    "InstanceType" : {
+      "Description" : "Instance type of server.",
+      "Type" : "String",
+      "Default" : "t2.medium",
+      "AllowedValues" : ["t2.medium","t2.large"],
+      "ConstraintDescription" : "Must be at least t2.medium."
+    },
+
+    "LDAPUserNames" : {
+      "Description" : "Enter the Usernames of the users, space separated in firstname.lastname format. The initial password for all these users: password.",
+      "Type" : "String",
+      "ConstraintDescription" : "firstname.lastname"
+    }
+  },
+
+    "Resources" : {
+      "LDAPSecurityGroup" : {
+        "Type" : "AWS::EC2::SecurityGroup",
+        "Properties" : {
+          "GroupDescription" : "Allow all ports for LDAP",
+          "VpcId" : "YourVPCID",
+          "Tags" :
+          [ {"Key" : "Name", "Value" : "YourSecurityGroupName"}
+          ],
+          "SecurityGroupIngress" :
+            [  { "IpProtocol" : "udp", "FromPort" : "123", "ToPort" : "123", "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "80",  "ToPort" : "80",  "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "389", "ToPort" : "389", "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "636", "ToPort" : "636", "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "88",  "ToPort" : "88",  "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "389", "ToPort" : "389", "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "464", "ToPort" : "464", "CidrIp" : "0.0.0.0/0"
+            }, { "IpProtocol" : "tcp", "FromPort" : "22",  "ToPort" : "22",  "CidrIp" : "0.0.0.0/0"
+            }  ],
+          "SecurityGroupEgress" :
+            [  { "IpProtocol" : "tcp", "FromPort" : "0", "ToPort" : "65535", "CidrIp" : "0.0.0.0/0"
+            }  ]
+          }
+        },
+
+      "IPAVolume" : {
+        "Type" : "AWS::EC2::Volume",
+        "Properties" : {
+          "Size" : "100",
+          "Encrypted" : "false",
+          "AvailabilityZone" : "eu-west-1a",
+          "Tags" :
+            [ { "Key" : "Name", "Value" : "EBS Volume for IPA Server" } ]
+          },
+        "DeletionPolicy" : "Retain"
+      },
+
+      "PTRRecordSet" :{
+        "Type" : "AWS::Route53::RecordSetGroup",
+        "Properties" : {
+          "HostedZoneId" : "YourHostedZoneID",
+          "RecordSets" : [ {
+              "Name" : "1.0.0.10.in-addr-arpa.",
+              "Type" : "PTR",
+              "TTL" : "300",
+              "ResourceRecords" : ["ipa.yourdomain"]
+            }
+          ]
+        }
+      },
+
+      "ARecordSet" : {
+        "Type" : "AWS::Route53::RecordSetGroup",
+        "Properties" : {
+          "HostedZoneId" : "YourHostedZoneID",
+          "RecordSets" : [ {
+              "Name" : "ipa.yourdomain.",
+              "Type" : "A",
+              "TTL" : "300",
+              "ResourceRecords" : [ "10.0.0.1" ]
+            }
+          ]
+        }
+      },
+
+      "IPAServer" : {
+        "Type" : "AWS::EC2::Instance",
+        "Properties" : {
+          "InstanceType" : { "Ref" : "InstanceType" },
+          "Tags" :
+          [ {"Key" : "Name", "Value" : "YourInstanceName"}
+          ],
+          "Volumes" :
+          [ { "VolumeId" : { "Ref" : "IPAVolume" },
+              "Device" : "/dev/sdb"
+          } ],
+          "AvailabilityZone" : "SelectedRegionAvailabiltyZone",
+          "ImageId" : "Redhat AMI from your region",
+          "KeyName" : { "Ref" : "KeyName" },
+          "NetworkInterfaces" : [
+            {
+              "AssociatePublicIpAddress" : false,
+              "DeviceIndex" : "0",
+              "DeleteOnTermination" : true,
+              "SubnetId" : "YourSubnetID",
+              "PrivateIpAddress" : "10.0.0.1",
+              "GroupSet" :  [ { "Ref" : "LDAPSecurityGroup" } ]
+          }
+        ],
+          "UserData" : {
+            "Fn::Base64" : {
+              "Fn::Join" : [
+                "\n",
+                [
+                  "#!/bin/bash",
+                  "hostnamectl set-hostname ipa.yourdomain",
+                  "echo \"HOSTNAME=ipa.yourdomain\" >> /etc/sysconfig/network",
+                  "echo \"preserve_hostname: true\" >> /etc/cloud/cloud.cfg",
+                  "HOST_IP=$(curl http://169.254.169.254/latest/meta-data/local-ipv4)",
+                  "echo \"${HOST_IP}   $(hostname -f)\" >> /etc/hosts",
+                  "export password=$(</dev/urandom tr -dc a-z-A-Z-0-9 | head -c 8)",
+                  "echo $password >> /root/passwords.txt",
+                  "yum update -y",
+                  "yum install lvm2 ipa-server ipa-server-dns bind-byndb-ldap -y",
+                  "#Below creates a Volume Group with Logical Volumes for /var/lib and /var/log",
+                  "sed -i 's/use_lvmetad = 1/use_lvmetad = 0/' /etc/lvm/lvm.conf",
+                  "sleep 30",
+                  "pvcreate /dev/xvdb",
+                  "vgcreate vg_ipa /dev/xvdb",
+                  "lvcreate -L +20GB vg_ipa -n lv_var-lib",
+                  "lvcreate -L +75GB vg_ipa -n lv_var-log",
+                  "sed -i 's/use_lvmetad = 0/use_lvmetad = 1/' /etc/lvm/lvm.conf",
+                  "pvscan --cache",
+                  "mkfs.xfs /dev/vg_ipa/lv_var-lib",
+                  "mkfs.xfs /dev/vg_ipa/lv_var-log",
+                  "blkid | grep lv_var--lib | awk '{print $2}' | awk -F \\\" '{print \"UUID=\"$2 \" /var/lib    xfs defaults 1 2 \"}' >> /etc/fstab",
+                  "blkid | grep lv_var--log | awk '{print $2}' | awk -F \\\" '{print \"UUID=\"$2 \" /var/log    xfs defaults 1 2 \"}' >> /etc/fstab",
+                  "mount /dev/mapper/vg_ipa-lv_var--log /mnt/",
+                  "cp -rp /var/log/* /mnt/",
+                  "umount /mnt",
+                  "mount /dev/mapper/vg_ipa-lv_var--lib /mnt/",
+                  "cp -rp /var/lib/* /mnt/",
+                  "umount /mnt",
+                  "mount -a",
+                  "#Below disabled SELinux temporarily and installs Redhat IP",
+                  "setenforce 0",
+                  "ipa-server-install -U --hostname $(hostname -f) -r $(hostname -d) -n $(hostname -d) -p $password -a $password -d",
+                  "echo $password | kinit admin",
+                  "#Below creates users specified in cloudformation parameter and creates a user with enrolling permissions to enroll hosts."
+                  {"Fn::Sub": "for i in ${LDAPUserNames}; do echo \"password\" | ipa user-add $i --first=$(echo $i | awk -F . '{print $1}' | sed 's/.*/\\u&/') --last=$(echo $i | awk -F . '{print $2}' | sed 's/.*/\\u&/') --password --shell=/bin/; done" },
+                  "echo 3nr0ll4ut0mat3! | ipa user-add host.enroll --first=Host --last=Enroll --homedir=/home/host.enroll --password",
+                  "ipa role-add --desc=\"Role for Host Enrollment\" HostEnrollRole",
+                  "ipa role-add-member --users=host.enroll HostEnrollRole",
+                  "ipa role-add-privilege HostEnrollRole --privileges='Host Enrollment'"
+                ]
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
