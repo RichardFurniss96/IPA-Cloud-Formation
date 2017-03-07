@@ -155,7 +155,7 @@
                   "setenforce 0",
                   "ipa-server-install -U --hostname $(hostname -f) -r $(hostname -d) -n $(hostname -d) -p $password -a $password -d",
                   "echo $password | kinit admin",
-                  "#Below creates users specified in cloudformation parameter and creates a user with enrolling permissions to enroll hosts."
+                  "#Below creates users specified in cloudformation parameter and creates a user with enrolling permissions to enroll hosts.",
                   {"Fn::Sub": "for i in ${LDAPUserNames}; do echo \"password\" | ipa user-add $i --first=$(echo $i | awk -F . '{print $1}' | sed 's/.*/\\u&/') --last=$(echo $i | awk -F . '{print $2}' | sed 's/.*/\\u&/') --password --shell=/bin/; done" },
                   "echo 3nr0ll4ut0mat3! | ipa user-add host.enroll --first=Host --last=Enroll --homedir=/home/host.enroll --password",
                   "ipa role-add --desc=\"Role for Host Enrollment\" HostEnrollRole",
